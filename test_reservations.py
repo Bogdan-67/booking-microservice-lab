@@ -32,6 +32,7 @@ def test_invalid_seat_returns_422_without_changing_store() -> None:
     before = {k: v.model_copy(deep=True) for k, v in store.items()}
     response = client.post("/reservations", json={**NEW, "seat": "12A"})
     assert response.status_code == 422
+    assert response.json()["detail"]
     assert store == before
 
 
@@ -42,6 +43,7 @@ def test_taken_seat_returns_409_without_changing_store() -> None:
         json={"event_id": "concert-7", "seat": "A-12", "customer_id": "customer-2"},
     )
     assert response.status_code == 409
+    assert response.json()["detail"] == "Seat is already reserved"
     assert store == before
 
 
@@ -67,6 +69,7 @@ def test_repeated_confirm_returns_409_without_changing_reservation() -> None:
     second = client.post("/reservations/reservation-001/confirm")
     assert first.status_code == 200
     assert second.status_code == 409
+    assert second.json()["detail"] == "Reservation is not in held status"
     assert store["reservation-001"] == saved
 
 
@@ -74,4 +77,5 @@ def test_confirm_unknown_reservation_returns_404() -> None:
     before = {k: v.model_copy(deep=True) for k, v in store.items()}
     response = client.post("/reservations/missing/confirm")
     assert response.status_code == 404
+    assert response.json()["detail"] == "Reservation not found"
     assert store == before
