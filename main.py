@@ -26,6 +26,12 @@ store: dict[str, Reservation] = {
 }
 
 
+ACTIVE_STATUSES = ("held", "confirmed")
+active_seats: set[tuple[str, str]] = {
+    (r.event_id, r.seat) for r in store.values() if r.status in ACTIVE_STATUSES
+}
+
+
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "service": SERVICE_NAME, "version": SERVICE_VERSION}
@@ -45,12 +51,22 @@ def get_reservation(reservation_id: str) -> Reservation:
 
 @app.post("/reservations", response_model=Reservation, status_code=status.HTTP_201_CREATED)
 def create_reservation(payload: ReservationCreate) -> Reservation:
-    # TODO: создать held-бронь; активная бронь места одного события должна быть уникальной.
-    raise HTTPException(status_code=501, detail="Implement create_reservation")
+    key = (payload.event_id, payload.seat)
+    if key in active_seats:
+        raise HTTPException(status_code=409, detail="Seat is already reserved")
+    reservation = Reservation(id=str(uuid4()), status="held", **payload.model_dump())
+    store[reservation.id] = reservation
+    active_seats.add(key)
+    return reservation
 
 
 @app.post("/reservations/{reservation_id}/confirm", response_model=Reservation)
 def confirm_reservation(reservation_id: str) -> Reservation:
-    # TODO: held -> confirmed; повторное подтверждение вернуть как 409.
-    raise HTTPException(status_code=501, detail="Implement confirm_reservation")
-
+    reservation = store.get(reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    if reservation.status != "held":
+        raise HTTPException(status_code=409, detail="Reservation is not in held status")
+    confirmed = reservation.model_copy(update={"status": "confirmed"})
+    store[reservation_id] = confirmed
+    return confirmed
