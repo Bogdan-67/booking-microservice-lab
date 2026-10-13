@@ -79,3 +79,44 @@ def test_confirm_unknown_reservation_returns_404() -> None:
     assert response.status_code == 404
     assert response.json()["detail"] == "Reservation not found"
     assert store == before
+
+
+def test_cancel_held_reservation_changes_status() -> None:
+    response = client.post("/reservations/reservation-001/cancel")
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    assert client.get("/reservations/reservation-001").json()["status"] == "cancelled"
+
+
+def test_cancel_confirmed_reservation_changes_status() -> None:
+    client.post("/reservations/reservation-001/confirm")
+    response = client.post("/reservations/reservation-001/cancel")
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+
+
+def test_repeated_cancel_returns_409_without_changing_reservation() -> None:
+    client.post("/reservations/reservation-001/cancel")
+    saved = store["reservation-001"].model_copy(deep=True)
+    response = client.post("/reservations/reservation-001/cancel")
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Reservation is already cancelled"
+    assert store["reservation-001"] == saved
+
+
+def test_cancel_unknown_reservation_returns_404() -> None:
+    before = {k: v.model_copy(deep=True) for k, v in store.items()}
+    response = client.post("/reservations/missing/cancel")
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Reservation not found"
+    assert store == before
+
+
+def test_cancelled_seat_can_be_reserved_again() -> None:
+    client.post("/reservations/reservation-001/cancel")
+    response = client.post(
+        "/reservations",
+        json={"event_id": "concert-7", "seat": "A-12", "customer_id": "customer-2"},
+    )
+    assert response.status_code == 201
+    assert response.json()["status"] == "held"

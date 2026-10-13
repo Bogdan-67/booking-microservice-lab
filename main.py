@@ -70,3 +70,16 @@ def confirm_reservation(reservation_id: str) -> Reservation:
     confirmed = reservation.model_copy(update={"status": "confirmed"})
     store[reservation_id] = confirmed
     return confirmed
+
+
+@app.post("/reservations/{reservation_id}/cancel", response_model=Reservation)
+def cancel_reservation(reservation_id: str) -> Reservation:
+    reservation = store.get(reservation_id)
+    if reservation is None:
+        raise HTTPException(status_code=404, detail="Reservation not found")
+    if reservation.status == "cancelled":
+        raise HTTPException(status_code=409, detail="Reservation is already cancelled")
+    cancelled = reservation.model_copy(update={"status": "cancelled"})
+    store[reservation_id] = cancelled
+    active_seats.discard((reservation.event_id, reservation.seat))
+    return cancelled
