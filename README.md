@@ -20,10 +20,10 @@ OpenAPI: http://127.0.0.1:8000/openapi.json
 
 ## Реализованные правила
 
-- `POST /reservations` создаёт бронь со статусом `held` и id в формате uuid4. Формат места проверяет Pydantic (422).
+- `POST /reservations` создает бронь со статусом `held` и id в формате uuid4. Формат места проверяет Pydantic (422).
 - Активной считается бронь в статусе `held` или `confirmed`. Второй активной брони на то же место того же события быть не может (409).
-- `POST /reservations/{id}/confirm` переводит `held -> confirmed`. Неизвестный id даёт 404, повторное подтверждение даёт 409.
-- `POST /reservations/{id}/cancel` переводит бронь из `held` или `confirmed` в `cancelled` и освобождает место. Неизвестный id даёт 404, повторная отмена даёт 409.
+- `POST /reservations/{id}/confirm` переводит `held -> confirmed`. Неизвестный id дает 404, повторное подтверждение дает 409.
+- `POST /reservations/{id}/cancel` переводит бронь из `held` или `confirmed` в `cancelled` и освобождает место. Неизвестный id дает 404, повторная отмена дает 409.
 - Все проверки выполняются до изменения `store`.
 
 ## Примеры запросов
@@ -58,25 +58,25 @@ curl -X POST http://127.0.0.1:8000/reservations/reservation-001/cancel
 
 ### Маршруты
 
-| Метод | URI | Успех | Ошибки |
-|---|---|---|---|
-| GET | `/health` | 200 | |
-| GET | `/reservations?status=&event_id=&seat=` | 200 | 400, 422 |
-| GET | `/reservations/{id}` | 200 | 404 |
-| POST | `/reservations` | 201 + `Location` | 409, 422 |
-| PATCH | `/reservations/{id}` | 200 | 400, 404, 409, 422 |
-| POST | `/reservations/{id}/confirm` | 200 | 404, 409 |
-| POST | `/reservations/{id}/cancel` | 200 | 404, 409 |
+| Метод | URI                                       | Успех         | Ошибки       |
+| ---------- | ----------------------------------------- | ------------------ | ------------------ |
+| GET        | `/health`                               | 200                |                    |
+| GET        | `/reservations?status=&event_id=&seat=` | 200                | 400, 422           |
+| GET        | `/reservations/{id}`                    | 200                | 404                |
+| POST       | `/reservations`                         | 201 + `Location` | 409, 422           |
+| PATCH      | `/reservations/{id}`                    | 200                | 400, 404, 409, 422 |
+| POST       | `/reservations/{id}/confirm`            | 200                | 404, 409           |
+| POST       | `/reservations/{id}/cancel`             | 200                | 404, 409           |
 
 ### Фильтры GET /reservations
 
 Фильтры необязательные и комбинируются (логическое И).
 
-- `status` — `held`, `confirmed` или `cancelled`; другое значение даёт 422.
+- `status` — `held`, `confirmed` или `cancelled`; другое значение дает 422.
 - `event_id` — точное совпадение.
-- `seat` — формат `A-12`, иначе 422. Место осмысленно только в рамках события, поэтому `seat` без `event_id` даёт 400.
+- `seat` — формат `A-12`, иначе 422. Место осмысленно только в рамках события, поэтому `seat` без `event_id` дает 400.
 
-### PATCH /reservations/{id}
+### PATCH /reservations/
 
 Меняется только `seat`, и только у брони в статусе `held`.
 
@@ -106,6 +106,7 @@ uvicorn main:app --host 127.0.0.1 --port 8443 \
 
 curl -k -v https://127.0.0.1:8443/health
 ```
+
 **Внимание**: `curl -k` отключает проверку сертификата и допустим только для этого локального учебного сертификата. Каталог `certs/` в `.gitignore`, закрытый ключ нельзя публиковать.
 
 ### Nginx
@@ -113,14 +114,19 @@ curl -k -v https://127.0.0.1:8443/health
 Nginx завершает TLS на 8443, редиректит 8080 на HTTPS (308) и проксирует на FastAPI (8000). Конфигурация: `deploy/nginx-seat-reservation.conf`
 
 Добавление конфигурации в общую
+
 ```
 sudo nano /etc/nginx/nginx.conf
 ```
+
 Внутри блока http { ... }, на одном уровне с существующим server { ... }, добавить:
-```nginx                                                                                                                                    
-  include /home/bogdan/Documents/study/microservices/09_seat_reservation_service/deploy/nginx-seat-reservation.conf;                          
-``` 
+
+```nginx
+  include /home/bogdan/Documents/study/microservices/09_seat_reservation_service/deploy/nginx-seat-reservation.conf;
+```
+
 Проверка и запуск
+
 ```
 sudo nginx -t
 sudo systemctl reload nginx
@@ -138,3 +144,70 @@ curl -s 'http://127.0.0.1:8000/reservations?status=held&event_id=concert-7&seat=
 curl -i -X PATCH http://127.0.0.1:8000/reservations/reservation-001 \
   -H 'Content-Type: application/json' -d '{"seat":"C-3"}'
 ```
+
+## ЛР № 3. Docker, PostgreSQL и Docker Compose
+
+Разделы выше описывают состояние без БД и контейнеризации: код в корне, хранилище в памяти. Код сервера перенесен в `backend/` и работает с PostgreSQL. Тесты ЛР 1–2 остаются в корне как архив и на текущем коде не запускаются.
+
+### Структура
+
+```
+backend/      FastAPI, SQLAlchemy, requirements.txt, Dockerfile
+frontend/     index.html, app.js, styles.css, Dockerfile
+proxy/        nginx.conf
+compose.yaml
+.env.example
+```
+
+### Контейнеры
+
+| Контейнер | Роль                                  | Сети   | Порт хоста |
+| ------------------ | ----------------------------------------- | ---------- | ------------------- |
+| proxy              | Nginx, единая точка входа | edge       | 8080:80             |
+| frontend           | HTML/CSS/JS                               | edge       | нет              |
+| backend            | FastAPI и доступ к SQL            | edge, data | нет              |
+| db                 | PostgreSQL, том `pgdata`             | data       | нет              |
+
+Маршруты: `/` → frontend, `/api/*` → backend (префикс `/api` убирается).
+
+### Запуск
+
+```
+cp .env.example .env
+docker compose config
+docker compose up --build -d
+docker compose ps
+```
+
+Интерфейс: http://localhost:8080. API: `curl http://localhost:8080/api/reservations`.
+
+В `.env` задается `POSTGRES_PASSWORD`. Файл `.env` в Git не попадает. Порт 8080 должен быть свободен: nginx из ЛР 2 нужно остановить.
+
+### Переменные окружения backend
+
+`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`. Compose берет их из `.env`, `DB_HOST=db`.
+
+### Health
+
+- `GET /api/health/live` не обращается к БД.
+- `GET /api/health/ready` выполняет `SELECT 1`, при недоступной БД отвечает 503.
+
+### Хранилище
+
+Таблица `seat_reservations` создается при старте backend через `Base.metadata.create_all`. Миграций нет: изменение структуры уже созданной таблицы не применяется. Данные лежат в именованном томе `lab3_pgdata`, которым управляет Docker.
+
+### Проверки
+
+| Команда | Что делает |
+|---|---|
+| `docker compose logs --tail=100` | Показывает последние 100 строк логов всех сервисов |
+| `docker inspect lab3-proxy-1 lab3-backend-1 lab3-db-1` | Выводит сети, порты, переменные окружения и тома контейнеров |
+| `docker compose exec proxy nginx -t` | Проверяет синтаксис конфигурации Nginx внутри proxy |
+| `docker compose exec db pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"` | Проверяет, что PostgreSQL принимает подключения |
+| `docker compose restart backend` | Перезапускает backend, данные в БД остаются |
+| `docker compose down` | Останавливает и удаляет контейнеры и сети, том сохраняется |
+| `docker compose up -d` | Создаёт и запускает контейнеры заново в фоне |
+| `docker compose stop db` | Останавливает БД: `/api/health/ready` должен вернуть 503 |
+| `docker compose start db` | Запускает БД снова, сервис должен восстановиться |
+
+`docker compose down -v` удаляет том вместе с данными.
