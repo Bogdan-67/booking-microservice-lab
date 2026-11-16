@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: msa-v9-tugai
+  labels:
+    app.kubernetes.io/part-of: seat-reservation
+    environment: lab

@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: proxy
+  namespace: msa-v9-tugai
+  labels:
+    app.kubernetes.io/name: proxy
+    app.kubernetes.io/part-of: seat-reservation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: proxy
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: proxy
+        app.kubernetes.io/part-of: seat-reservation
+    spec:
+      containers:
+        - name: proxy
+          image: nginx:stable-alpine
+          ports:
+            - name: http
+              containerPort: 80
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: proxy-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: proxy
+  namespace: msa-v9-tugai
+spec:
+  selector:
+    app.kubernetes.io/name: proxy
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+  type: ClusterIP

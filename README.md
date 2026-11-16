@@ -198,16 +198,155 @@ docker compose ps
 
 ### Проверки
 
-| Команда | Что делает |
-|---|---|
-| `docker compose logs --tail=100` | Показывает последние 100 строк логов всех сервисов |
-| `docker inspect lab3-proxy-1 lab3-backend-1 lab3-db-1` | Выводит сети, порты, переменные окружения и тома контейнеров |
-| `docker compose exec proxy nginx -t` | Проверяет синтаксис конфигурации Nginx внутри proxy |
-| `docker compose exec db pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"` | Проверяет, что PostgreSQL принимает подключения |
-| `docker compose restart backend` | Перезапускает backend, данные в БД остаются |
-| `docker compose down` | Останавливает и удаляет контейнеры и сети, том сохраняется |
-| `docker compose up -d` | Создаёт и запускает контейнеры заново в фоне |
-| `docker compose stop db` | Останавливает БД: `/api/health/ready` должен вернуть 503 |
-| `docker compose start db` | Запускает БД снова, сервис должен восстановиться |
+| Команда                                                              | Что делает                                                                                             |
+| --------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `docker compose logs --tail=100`                                          | Показывает последние 100 строк логов всех сервисов                     |
+| `docker inspect lab3-proxy-1 lab3-backend-1 lab3-db-1`                    | Выводит сети, порты, переменные окружения и тома контейнеров |
+| `docker compose exec proxy nginx -t`                                      | Проверяет синтаксис конфигурации Nginx внутри proxy                         |
+| `docker compose exec db pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"` | Проверяет, что PostgreSQL принимает подключения                                 |
+| `docker compose restart backend`                                          | Перезапускает backend, данные в БД остаются                                       |
+| `docker compose down`                                                     | Останавливает и удаляет контейнеры и сети, том сохраняется    |
+| `docker compose up -d`                                                    | Создаёт и запускает контейнеры заново в фоне                              |
+| `docker compose stop db`                                                  | Останавливает БД: `/api/health/ready` должен вернуть 503                          |
+| `docker compose start db`                                                 | Запускает БД снова, сервис должен восстановиться                      |
 
 `docker compose down -v` удаляет том вместе с данными.
+
+## ЛР № 4. Kubernetes на k3s
+
+Приложение из ЛР 3 развернуто в односерверном кластере k3s на Linux VM. Манифесты лежат в `k8s/`, образы backend и frontend берутся из Docker Hub по фиксированным тегам.
+
+### Окружение
+
+| Параметр | Значение                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------- |
+| VM               | Ubuntu Server 24.04 LTS, KVM/libvirt, 4 vCPU, 6 ГБ RAM, 30 ГБ диска                                  |
+| Нода         | `k3s-lab`, `192.168.122.68` (NAT-сеть libvirt `default`)                                            |
+| k3s / Kubernetes | `v1.37.2+k3s1`                                                                                              |
+| Namespace        | `msa-v9-tugai`                                                                                              |
+| Ingress host     | `reservations.lab.local`                                                                                    |
+| Образы     | `docker.io/bogdan67/seat-reservation-backend:1.0.0`, `docker.io/bogdan67/seat-reservation-frontend:1.0.0` |
+
+### Архитектура
+
+```
+браузер → 192.168.122.68:80 → Traefik Ingress (reservations.lab.local)
+        → Service proxy → Pod Nginx → Service frontend | Service backend
+        → backend Pod → Service db → PostgreSQL Pod (db-0) + PVC data-db-0
+```
+
+| Компонент | Ресурсы                                             | Реплики     | Доступ                               |
+| ------------------ | ---------------------------------------------------------- | ------------------ | ------------------------------------------ |
+| Traefik            | встроенный ingress controller k3s                | системный | 80/443 ноды                            |
+| proxy              | Deployment + Service + ConfigMap `proxy-config`          | 1                  | ClusterIP                                  |
+| frontend           | Deployment + Service                                       | 1                  | ClusterIP                                  |
+| backend            | Deployment + Service                                       | 2                  | ClusterIP                                  |
+| db                 | StatefulSet + headless Service + PVC (`local-path`, 2Gi) | 1                  | только внутри кластера |
+
+Наружу приложение доступно только через Ingress. Сервисы находят друг друга по DNS-именам Service (`backend`, `frontend`, `db`). Параметры подключения к БД лежат в ConfigMap `app-config`, пароль в Secret `db-secret`.
+
+### Манифесты
+
+```
+k8s/
+├── 00-namespace.yaml     Namespace msa-v9-tugai
+├── 01-app-config.yaml    ConfigMap app-config (DB_HOST, DB_PORT, DB_NAME, DB_USER)
+├── 02-database.yaml      headless Service db + StatefulSet db
+├── 03-backend.yaml       Deployment backend (2 реплики, probes, resources) + Service
+├── 04-frontend.yaml      Deployment frontend + Service
+├── 05-proxy-config.yaml  ConfigMap proxy-config (default.conf Nginx)
+├── 06-proxy.yaml         Deployment proxy + Service
+└── 07-ingress.yaml       Ingress app → proxy:80
+```
+
+Secret в репозиторий не входит и создается отдельной командой.
+
+### Публикация образов
+
+```
+docker compose build
+docker tag lab3-backend bogdan67/seat-reservation-backend:1.0.0
+docker tag lab3-frontend bogdan67/seat-reservation-frontend:1.0.0
+docker push bogdan67/seat-reservation-backend:1.0.0
+docker push bogdan67/seat-reservation-frontend:1.0.0
+```
+
+Теги не перезаписываются: исправленная версия публикуется с новым тегом (`1.0.1`).
+
+### Развертывание
+
+```
+kubectl apply -f k8s/00-namespace.yaml
+kubectl config set-context --current --namespace=msa-v9-tugai
+
+read -s DB_PASSWORD
+kubectl create secret generic db-secret \
+  --from-literal=POSTGRES_PASSWORD="$DB_PASSWORD" \
+  --dry-run=client -o yaml | kubectl apply -f -
+unset DB_PASSWORD
+
+kubectl apply -f k8s/
+kubectl rollout status statefulset/db --timeout=180s
+kubectl wait --for=condition=Available deployment/backend deployment/frontend deployment/proxy --timeout=180s
+kubectl get deployments,statefulsets,pods,services,pvc,ingress
+```
+
+На рабочей станции в `/etc/hosts`:
+
+```
+192.168.122.68 reservations.lab.local
+```
+
+Интерфейс: http://reservations.lab.local. API:
+
+```
+curl http://reservations.lab.local/api/reservations
+curl -H "Host: reservations.lab.local" http://192.168.122.68/api/reservations
+```
+
+Если порт 80 ноды недоступен, для диагностики: `kubectl port-forward service/proxy 8080:80`.
+
+### Probes
+
+- readiness backend: `GET /health/ready` (`SELECT 1`). Pod без готовой БД исключается из endpoints Service.
+- liveness backend: `GET /health/live`, к БД не обращается. Кратковременная недоступность PostgreSQL не вызывает перезапуск контейнера.
+- readiness db: `pg_isready`.
+
+### Обновление и откат
+
+```
+kubectl set image deployment/backend backend=docker.io/bogdan67/seat-reservation-backend:1.0.1
+kubectl rollout status deployment/backend
+kubectl rollout history deployment/backend
+kubectl rollout undo deployment/backend
+```
+
+Стратегия RollingUpdate с `maxUnavailable: 0`, `maxSurge: 1`: при обновлении число готовых реплик не опускается ниже двух.
+
+### Проверки
+
+| Команда                                                                              | Что проверяет                                                                                    |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `kubectl delete pod <backend-pod>`                                                        | Deployment восстанавливает 2 реплики                                                   |
+| `kubectl run dns-test --rm -it --restart=Never --image=busybox:1.36 -- nslookup backend`  | Service сохраняет DNS-имя при смене Pod IP                                               |
+| `kubectl scale deployment backend --replicas=3`                                           | Масштабирование отражается в Deployment и ReplicaSet                              |
+| `kubectl get endpointslices -l kubernetes.io/service-name=backend`                        | Адреса готовых backend Pod                                                                      |
+| `kubectl delete pod db-0`                                                                 | StatefulSet пересоздает `db-0`, PVC остается Bound, данные сохраняются |
+| `kubectl exec -it db-0 -- psql -U appuser -d appdb -c "SELECT * FROM seat_reservations;"` | Данные в PostgreSQL                                                                                   |
+
+Диагностика:
+
+```
+kubectl describe pod <pod>
+kubectl logs <pod> --all-containers --tail=100
+kubectl get events --sort-by=.lastTimestamp
+sudo journalctl -u k3s -n 100 --no-pager
+```
+
+### Очистка
+
+```
+kubectl delete -f k8s/
+kubectl get pvc          # PVC удаляется только вручную, если данные больше не нужны
+kubectl delete namespace msa-v9-tugai
+```

@@ -1,0 +1,18 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app
+  namespace: msa-v9-tugai
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: reservations.lab.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: proxy
+                port:
+                  number: 80

@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+  namespace: msa-v9-tugai
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/part-of: seat-reservation
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/part-of: seat-reservation
+    spec:
+      containers:
+        - name: backend
+          image: docker.io/bogdan67/seat-reservation-backend:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          readinessProbe:
+            httpGet: {path: /health/ready, port: http}
+            periodSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+          envFrom:
+            - configMapRef:
+                name: app-config
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret
+                  key: POSTGRES_PASSWORD
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend
+  namespace: msa-v9-tugai
+spec:
+  selector:
+    app.kubernetes.io/name: backend
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+  type: ClusterIP
