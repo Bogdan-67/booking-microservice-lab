@@ -5,6 +5,10 @@ metadata:
   namespace: msa-v9-tugai
 spec:
   ingressClassName: traefik
+  tls:
+    - hosts:
+        - reservations.lab.local
+      secretName: reservations-tls
   rules:
     - host: reservations.lab.local
       http:

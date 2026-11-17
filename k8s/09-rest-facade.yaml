@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rest-facade
+  namespace: msa-v9-tugai
+  labels:
+    app.kubernetes.io/name: rest-facade
+    app.kubernetes.io/part-of: seat-reservation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rest-facade
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rest-facade
+        app.kubernetes.io/part-of: seat-reservation
+    spec:
+      containers:
+        - name: facade
+          image: docker.io/bogdan67/seat-reservation-facade:1.0.1
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8000
+          env:
+            - {name: GRPC_TARGET, value: "booking-grpc:50051"}
+            - {name: GRPC_DEADLINE, value: "0.35"}
+          readinessProbe:
+            httpGet: {path: /health/live, port: http}
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: {path: /health/live, port: http}
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {cpu: 500m, memory: 256Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rest-facade
+  namespace: msa-v9-tugai
+  labels:
+    app.kubernetes.io/name: rest-facade
+    app.kubernetes.io/part-of: seat-reservation
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: rest-facade
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http

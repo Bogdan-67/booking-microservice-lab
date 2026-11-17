@@ -350,3 +350,133 @@ kubectl delete -f k8s/
 kubectl get pvc          # PVC удаляется только вручную, если данные больше не нужны
 kubectl delete namespace msa-v9-tugai
 ```
+
+## ЛР № 5. gRPC, REST-фасад и API Gateway
+
+Чтение и подтверждение брони вынесены в отдельный gRPC-сервис. Внешние клиенты работают с ним через REST-фасад по версионированному API `/api/v1`. Nginx выполняет роль API Gateway. Старый маршрут `/api/*` продолжает работать через backend.
+
+### Архитектура
+
+```
+браузер → Traefik (TLS, reservations.lab.local) → Nginx
+        ├── /api/v1/* → rest-facade:8000 → gRPC booking-grpc:50051 → db:5432
+        ├── /api/*    → backend:8000 → db:5432
+        └── /         → frontend:80
+```
+
+| Компонент | Ресурсы | Реплики | Порт |
+| --- | --- | --- | --- |
+| rest-facade | Deployment + Service | 1 | 8000, ClusterIP |
+| booking-grpc | Deployment + Service | 2 | 50051, ClusterIP |
+
+gRPC-сервис использует ту же таблицу `seat_reservations`, что и backend.
+
+### Структура
+
+```
+proto/booking.proto        контракт BookingService
+grpc_service/              gRPC-сервер, Dockerfile
+rest_facade/               FastAPI-фасад и gRPC-клиент, Dockerfile
+k8s/08-booking-grpc.yaml   Deployment + Service booking-grpc
+k8s/09-rest-facade.yaml    Deployment + Service rest-facade
+```
+
+### API
+
+| Метод | URI | gRPC | Ответы |
+| --- | --- | --- | --- |
+| GET | `/api/v1/bookings/{id}` | GetBooking | 200, 404, 503, 504 |
+| POST | `/api/v1/bookings/{id}/confirm` | ConfirmBooking | 200, 400, 404, 409, 503, 504 |
+
+| gRPC status | HTTP |
+| --- | --- |
+| INVALID_ARGUMENT | 400 |
+| NOT_FOUND | 404 |
+| FAILED_PRECONDITION | 409 |
+| UNAVAILABLE | 503 |
+| DEADLINE_EXCEEDED | 504 |
+| остальные | 502 |
+
+Подтверждение возможно только из статуса `held`, повторное подтверждение дает 409. При превышении лимита запросов Nginx отвечает 429.
+
+```
+curl -k https://reservations.lab.local/api/v1/bookings/<id>
+curl -k -X POST https://reservations.lab.local/api/v1/bookings/<id>/confirm
+```
+
+### Надежность
+
+- Deadline каждого вызова фасада к gRPC — 350 мс.
+- `GetBooking` при `UNAVAILABLE` повторяется до 3 попыток. `ConfirmBooking` не повторяется.
+- Nginx ограничивает `/api/v1/` до 8 запросов в секунду с одного IP (`burst=4`).
+- `X-Request-ID` передается от Nginx в фасад и в gRPC metadata, поэтому один запрос можно найти в логах всех трех компонентов.
+
+### Генерация кода
+
+В образах код генерируется при сборке. Локально, для IDE:
+
+```
+pip install -r requirements.txt
+python -m grpc_tools.protoc -I proto --python_out=grpc_service --grpc_python_out=grpc_service proto/booking.proto
+python -m grpc_tools.protoc -I proto --python_out=rest_facade --grpc_python_out=rest_facade proto/booking.proto
+```
+
+Сгенерированные `*_pb2*.py` в Git не попадают.
+
+### Сборка и публикация образов
+
+Сборка выполняется из корня репозитория, чтобы образы видели `proto/`.
+
+```
+docker build -f grpc_service/Dockerfile -t bogdan67/seat-reservation-grpc:1.0.1 .
+docker build -f rest_facade/Dockerfile -t bogdan67/seat-reservation-facade:1.0.1 .
+docker push bogdan67/seat-reservation-grpc:1.0.1
+docker push bogdan67/seat-reservation-facade:1.0.1
+```
+
+### Развертывание
+
+TLS-сертификат для Ingress создается один раз и в репозиторий не попадает:
+
+```
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 -keyout certs/tls.key -out certs/tls.crt \
+  -subj "/CN=reservations.lab.local" -addext "subjectAltName=DNS:reservations.lab.local"
+kubectl create secret tls reservations-tls --cert=certs/tls.crt --key=certs/tls.key
+```
+
+```
+kubectl apply -f k8s/
+kubectl rollout restart deployment/proxy
+kubectl rollout status deployment/booking-grpc
+kubectl rollout status deployment/rest-facade
+kubectl exec deploy/proxy -- nginx -t
+```
+
+Перезапуск proxy обязателен: конфигурация Nginx смонтирована через `subPath` и сама в Pod не обновляется.
+
+### Переменные окружения
+
+| Сервис | Переменная | Назначение |
+| --- | --- | --- |
+| rest-facade | `GRPC_TARGET` | адрес gRPC-сервиса, по умолчанию `booking-grpc:50051` |
+| rest-facade | `GRPC_DEADLINE` | deadline вызова в секундах, по умолчанию `0.35` |
+| booking-grpc | `DB_*` | подключение к PostgreSQL, из `app-config` и `db-secret` |
+| booking-grpc | `TEST_DELAY_MS` | искусственная задержка обработчика, по умолчанию `0` |
+| booking-grpc | `TEST_FAIL_UNAVAILABLE` | `1` — сервис отвечает UNAVAILABLE на каждый вызов |
+
+Тестовые переменные применяются только в учебном окружении:
+
+```
+kubectl set env deployment/booking-grpc TEST_DELAY_MS=1000
+kubectl set env deployment/booking-grpc TEST_DELAY_MS=0
+```
+
+### Проверки
+
+| Команда | Что проверяет |
+| --- | --- |
+| `kubectl run grpcurl --rm -it --restart=Never --image=fullstorydev/grpcurl -- -plaintext booking-grpc:50051 list` | gRPC-сервис доступен, reflection включен |
+| `curl -k -H 'X-Request-ID: test-01' https://reservations.lab.local/api/v1/bookings/<id>` | сквозной запрос через gateway |
+| `kubectl logs -l app.kubernetes.io/name=booking-grpc --prefix \| grep test-01` | request ID дошел до gRPC-сервиса |
+| `kubectl scale deployment/booking-grpc --replicas=0` | фасад отвечает 503 вместо зависания |
+| `seq 1 20 \| xargs -P10 -I{} curl -k -s -o /dev/null -w '%{http_code}\n' https://reservations.lab.local/api/v1/bookings/<id> \| sort \| uniq -c` | часть запросов получает 429 |

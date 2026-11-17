@@ -1,0 +1,19 @@
+syntax = "proto3";
+package booking.v1;
+
+service BookingService {
+  rpc GetBooking(GetBookingRequest) returns (BookingReply);
+  rpc ConfirmBooking(ConfirmBookingRequest) returns (BookingReply);
+}
+
+message GetBookingRequest { string id = 1; }
+message ConfirmBookingRequest { string id = 1; }
+
+message BookingReply {
+  string id = 1;
+  string event_id = 2;
+  string seat = 3;
+  string customer_id = 4;
+  string status = 5;
+  string instance = 6;
+}

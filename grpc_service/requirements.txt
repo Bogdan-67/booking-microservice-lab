@@ -1,0 +1,6 @@
+grpcio==1.85.1
+grpcio-health-checking==1.85.1
+grpcio-reflection==1.85.1
+protobuf>=7.35.1,<8
+sqlalchemy>=2.0,<3.0
+psycopg[binary]>=3.2,<4.0
